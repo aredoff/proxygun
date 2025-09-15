@@ -35,7 +35,7 @@ func DefaultConfig() *Config {
 	}
 }
 
-type Client struct {
+type ProxyRoundTripper struct {
 	config    *Config
 	pool      *pool.Pool
 	parser    *parser.MultiParser
@@ -45,12 +45,12 @@ type Client struct {
 	wg        sync.WaitGroup
 }
 
-func NewClient(config *Config) *Client {
+func NewProxyRoundTripper(config *Config) *ProxyRoundTripper {
 	if config == nil {
 		config = DefaultConfig()
 	}
 
-	client := &Client{
+	rt := &ProxyRoundTripper{
 		config:    config,
 		pool:      pool.NewPool(config.PoolSize),
 		parser:    parser.NewMultiParser(),
@@ -58,40 +58,49 @@ func NewClient(config *Config) *Client {
 		stopCh:    make(chan struct{}),
 	}
 
-	client.startBackgroundTasks()
-	return client
+	rt.startBackgroundTasks()
+	return rt
 }
 
-func (c *Client) startBackgroundTasks() {
-	c.wg.Add(2)
-
-	go c.proxyRefreshWorker()
-	go c.badProxyCleanupWorker()
+// NewClient creates an http.Client with ProxyRoundTripper
+func NewClient(config *Config) *http.Client {
+	rt := NewProxyRoundTripper(config)
+	return &http.Client{
+		Transport: rt,
+		Timeout:   30 * time.Second,
+	}
 }
 
-func (c *Client) proxyRefreshWorker() {
-	defer c.wg.Done()
+func (rt *ProxyRoundTripper) startBackgroundTasks() {
+	rt.wg.Add(2)
 
-	ticker := time.NewTicker(c.config.RefreshInterval)
+	go rt.proxyRefreshWorker()
+	go rt.badProxyCleanupWorker()
+}
+
+func (rt *ProxyRoundTripper) proxyRefreshWorker() {
+	defer rt.wg.Done()
+
+	ticker := time.NewTicker(rt.config.RefreshInterval)
 	defer ticker.Stop()
 
-	c.refreshProxies()
+	rt.refreshProxies()
 
 	for {
 		select {
 		case <-ticker.C:
-			needed := c.pool.NeedsProxies()
-			if needed > 0 || c.pool.FreeSize() == 0 {
-				c.refreshProxies()
+			needed := rt.pool.NeedsProxies()
+			if needed > 0 || rt.pool.FreeSize() == 0 {
+				rt.refreshProxies()
 			}
-		case <-c.stopCh:
+		case <-rt.stopCh:
 			return
 		}
 	}
 }
 
-func (c *Client) badProxyCleanupWorker() {
-	defer c.wg.Done()
+func (rt *ProxyRoundTripper) badProxyCleanupWorker() {
+	defer rt.wg.Done()
 
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
@@ -99,17 +108,17 @@ func (c *Client) badProxyCleanupWorker() {
 	for {
 		select {
 		case <-ticker.C:
-			c.pool.CleanOldBadProxies(c.config.BadProxyMaxAge)
-			c.pool.CheckBadProxies()
-		case <-c.stopCh:
+			rt.pool.CleanOldBadProxies(rt.config.BadProxyMaxAge)
+			rt.pool.CheckBadProxies()
+		case <-rt.stopCh:
 			return
 		}
 	}
 }
 
-func (c *Client) refreshProxies() {
-	proxies, errs := c.parser.ParseAll()
-	providerName := c.parser.GetCurrentProviderName()
+func (rt *ProxyRoundTripper) refreshProxies() {
+	proxies, errs := rt.parser.ParseAll()
+	providerName := rt.parser.GetCurrentProviderName()
 
 	if len(errs) > 0 {
 		for _, err := range errs {
@@ -128,12 +137,12 @@ func (c *Client) refreshProxies() {
 	validChan := make(chan *proxy.Proxy, 100)
 	go func() {
 		defer close(validChan)
-		c.validator.ValidateProxiesConcurrentStream(proxies, c.config.ValidationWorkers, validChan)
+		rt.validator.ValidateProxiesConcurrentStream(proxies, rt.config.ValidationWorkers, validChan)
 	}()
 
 	added := 0
 	for validProxy := range validChan {
-		if c.pool.Add(validProxy) {
+		if rt.pool.Add(validProxy) {
 			added++
 		}
 	}
@@ -146,16 +155,17 @@ func (c *Client) refreshProxies() {
 	}
 }
 
-func (c *Client) Do(req *http.Request) (*http.Response, error) {
+// RoundTrip implements the http.RoundTripper interface
+func (rt *ProxyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	var lastErr error
 
-	for attempt := 0; attempt < c.config.MaxRetries; attempt++ {
-		proxyWithStats := c.pool.GetNext()
+	for attempt := 0; attempt < rt.config.MaxRetries; attempt++ {
+		proxyWithStats := rt.pool.GetNext()
 		if proxyWithStats == nil {
 			return nil, errors.New("no proxies available")
 		}
 
-		resp, err := c.doWithProxy(req, proxyWithStats)
+		resp, err := rt.roundTripWithProxy(req, proxyWithStats)
 		if err != nil {
 			proxyWithStats.RecordFailure()
 			lastErr = err
@@ -169,7 +179,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return nil, fmt.Errorf("all proxy attempts failed, last error: %w", lastErr)
 }
 
-func (c *Client) doWithProxy(req *http.Request, proxyWithStats *proxy.ProxyWithStats) (*http.Response, error) {
+func (rt *ProxyRoundTripper) roundTripWithProxy(req *http.Request, proxyWithStats *proxy.ProxyWithStats) (*http.Response, error) {
 	p := proxyWithStats.Proxy
 
 	var transport *http.Transport
@@ -216,41 +226,49 @@ func (c *Client) doWithProxy(req *http.Request, proxyWithStats *proxy.ProxyWithS
 		return nil, errors.New("unsupported proxy type")
 	}
 
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   30 * time.Second,
-	}
-
-	return client.Do(req)
+	return transport.RoundTrip(req)
 }
 
-func (c *Client) Get(url string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	return c.Do(req)
-}
-
-func (c *Client) Post(url, contentType string, body interface{}) (*http.Response, error) {
-	// Implementation similar to http.Client.Post
-	// This would need proper body handling
-	return nil, errors.New("not implemented yet")
-}
-
-func (c *Client) Stats() map[string]interface{} {
+// Stats returns current proxy pool statistics
+func (rt *ProxyRoundTripper) Stats() map[string]interface{} {
 	return map[string]interface{}{
-		"pool_size":      c.pool.Size(),
-		"free_pool_size": c.pool.FreeSize(),
-		"needs_proxies":  c.pool.NeedsProxies(),
+		"pool_size":      rt.pool.Size(),
+		"free_pool_size": rt.pool.FreeSize(),
+		"needs_proxies":  rt.pool.NeedsProxies(),
 	}
 }
 
-func (c *Client) Close() error {
-	close(c.stopCh)
-	c.wg.Wait()
+// Close stops background workers and cleans up resources
+func (rt *ProxyRoundTripper) Close() error {
+	close(rt.stopCh)
+	rt.wg.Wait()
 	return nil
+}
+
+// ProxyClient wraps http.Client with ProxyRoundTripper for convenience
+type ProxyClient struct {
+	*http.Client
+	rt *ProxyRoundTripper
+}
+
+// NewProxyClient creates a ProxyClient with stats and close methods
+func NewProxyClient(config *Config) *ProxyClient {
+	rt := NewProxyRoundTripper(config)
+	return &ProxyClient{
+		Client: &http.Client{
+			Transport: rt,
+			Timeout:   30 * time.Second,
+		},
+		rt: rt,
+	}
+}
+
+// Stats returns current proxy pool statistics
+func (pc *ProxyClient) Stats() map[string]interface{} {
+	return pc.rt.Stats()
+}
+
+// Close stops background workers and cleans up resources
+func (pc *ProxyClient) Close() error {
+	return pc.rt.Close()
 }

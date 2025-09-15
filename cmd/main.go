@@ -13,7 +13,7 @@ func main() {
 	config.PoolSize = 20
 	config.MaxRetries = 5
 
-	client := proxygun.NewClient(config)
+	client := proxygun.NewProxyClient(config)
 	defer client.Close()
 
 	time.Sleep(5 * time.Second)

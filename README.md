@@ -1,6 +1,6 @@
 # ProxyGun
 
-Go library providing an HTTP client with automatic proxy server pool management.
+Go library providing an HTTP RoundTripper with automatic proxy server pool management.
 
 ## Features
 
@@ -12,6 +12,8 @@ Go library providing an HTTP client with automatic proxy server pool management.
 - Automatic pool replenishment when needed
 
 ## Usage
+
+### Option 1: Using ProxyClient (Recommended)
 
 ```go
 package main
@@ -29,7 +31,7 @@ func main() {
     config.PoolSize = 20
     config.MaxRetries = 5
 
-    client := proxygun.NewClient(config)
+    client := proxygun.NewProxyClient(config)
     defer client.Close()
 
     // Wait for proxy loading
@@ -44,6 +46,36 @@ func main() {
 
     fmt.Printf("Status: %s\n", resp.Status)
     fmt.Printf("Stats: %+v\n", client.Stats())
+}
+```
+
+### Option 2: Using ProxyRoundTripper with Custom Client
+
+```go
+package main
+
+import (
+    "net/http"
+    "time"
+
+    "github.com/aredoff/proxygun"
+)
+
+func main() {
+    config := proxygun.DefaultConfig()
+    
+    // Create ProxyRoundTripper
+    rt := proxygun.NewProxyRoundTripper(config)
+    defer rt.Close()
+
+    // Use with custom http.Client
+    client := &http.Client{
+        Transport: rt,
+        Timeout:   45 * time.Second,
+    }
+
+    resp, err := client.Get("https://httpbin.org/ip")
+    // Handle response...
 }
 ```
 
@@ -63,11 +95,28 @@ type Config struct {
 
 The library consists of the following components:
 
-- `client.go` - main HTTP client with proxy rotation
+- `client.go` - main HTTP RoundTripper with proxy rotation
 - `internal/proxy/` - structures for proxy representation and statistics
 - `internal/pool/` - proxy pool management (main, free, bad)
 - `internal/parser/` - parsers for proxy websites
 - `internal/validator/` - proxy validator through test requests
+
+## API
+
+### ProxyRoundTripper (Core)
+- `NewProxyRoundTripper(config *Config) *ProxyRoundTripper` - Creates a new RoundTripper
+- `RoundTrip(req *http.Request) (*http.Response, error)` - Implements http.RoundTripper interface
+- `Stats() map[string]interface{}` - Returns proxy pool statistics
+- `Close() error` - Stops background workers
+
+### ProxyClient (Convenience Wrapper)
+- `NewProxyClient(config *Config) *ProxyClient` - Creates a wrapped http.Client
+- All standard http.Client methods (Get, Post, Do, etc.)
+- `Stats() map[string]interface{}` - Returns proxy pool statistics
+- `Close() error` - Stops background workers
+
+### Legacy Compatibility
+- `NewClient(config *Config) *http.Client` - Returns standard http.Client with ProxyRoundTripper
 
 ## Proxy Sources
 
