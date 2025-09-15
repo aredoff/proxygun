@@ -23,6 +23,7 @@ type Config struct {
 	RefreshInterval   time.Duration
 	ValidationWorkers int
 	BadProxyMaxAge    time.Duration
+	FallbackTransport http.RoundTripper
 }
 
 func DefaultConfig() *Config {
@@ -32,6 +33,7 @@ func DefaultConfig() *Config {
 		RefreshInterval:   10 * time.Second,
 		ValidationWorkers: 30,
 		BadProxyMaxAge:    24 * time.Hour,
+		FallbackTransport: http.DefaultTransport,
 	}
 }
 
@@ -159,10 +161,11 @@ func (rt *ProxyRoundTripper) refreshProxies() {
 func (rt *ProxyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	var lastErr error
 
+	// Try with proxies first
 	for attempt := 0; attempt < rt.config.MaxRetries; attempt++ {
 		proxyWithStats := rt.pool.GetNext()
 		if proxyWithStats == nil {
-			return nil, errors.New("no proxies available")
+			break // No proxies available, try direct connection if allowed
 		}
 
 		resp, err := rt.roundTripWithProxy(req, proxyWithStats)
@@ -176,7 +179,22 @@ func (rt *ProxyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		return resp, nil
 	}
 
-	return nil, fmt.Errorf("all proxy attempts failed, last error: %w", lastErr)
+	// If all proxies failed and fallback transport is configured, use it
+	if rt.config.FallbackTransport != nil {
+		resp, err := rt.config.FallbackTransport.RoundTrip(req)
+		if err != nil {
+			if lastErr != nil {
+				return nil, fmt.Errorf("all proxy attempts failed (last proxy error: %v), fallback transport also failed: %w", lastErr, err)
+			}
+			return nil, fmt.Errorf("no proxies available, fallback transport failed: %w", err)
+		}
+		return resp, nil
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("all proxy attempts failed, last error: %w", lastErr)
+	}
+	return nil, errors.New("no proxies available")
 }
 
 func (rt *ProxyRoundTripper) roundTripWithProxy(req *http.Request, proxyWithStats *proxy.ProxyWithStats) (*http.Response, error) {

@@ -83,12 +83,31 @@ func main() {
 
 ```go
 type Config struct {
-    PoolSize          int           // Proxy pool size (default 50)
-    MaxRetries        int           // Maximum retry attempts (default 3)
-    RefreshInterval   time.Duration // Proxy refresh interval (default 10 seconds)
-    ValidationWorkers int           // Number of validation workers (default 30, max 50)
-    BadProxyMaxAge    time.Duration // Bad proxy retention time (default 24 hours)
+    PoolSize          int                // Proxy pool size (default 50)
+    MaxRetries        int                // Maximum retry attempts (default 3)
+    RefreshInterval   time.Duration      // Proxy refresh interval (default 10 seconds)
+    ValidationWorkers int                // Number of validation workers (default 30, max 50)
+    BadProxyMaxAge    time.Duration      // Bad proxy retention time (default 24 hours)
+    FallbackTransport http.RoundTripper  // Fallback transport when all proxies fail (default http.DefaultTransport)
 }
+```
+
+### Fallback Transport
+
+By default, if all proxies fail, the library will use `http.DefaultTransport` for direct connections. You can customize this behavior:
+
+```go
+config := proxygun.DefaultConfig()
+
+// Use custom fallback transport
+config.FallbackTransport = &http.Transport{
+    MaxIdleConns:       10,
+    IdleConnTimeout:    30 * time.Second,
+    DisableCompression: true,
+}
+
+// Disable fallback (fail if no proxies work)
+config.FallbackTransport = nil
 ```
 
 ## Architecture
