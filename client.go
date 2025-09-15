@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/aredoff/proxygun/internal/pool"
 	"github.com/aredoff/proxygun/internal/proxy"
 	"github.com/aredoff/proxygun/internal/validator"
+	"github.com/rs/zerolog"
 	netproxy "golang.org/x/net/proxy"
 )
 
@@ -24,9 +26,11 @@ type Config struct {
 	ValidationWorkers int
 	BadProxyMaxAge    time.Duration
 	FallbackTransport http.RoundTripper
+	Logger            zerolog.Logger
 }
 
 func DefaultConfig() *Config {
+	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Logger()
 	return &Config{
 		PoolSize:          50,
 		MaxRetries:        3,
@@ -34,6 +38,7 @@ func DefaultConfig() *Config {
 		ValidationWorkers: 30,
 		BadProxyMaxAge:    24 * time.Hour,
 		FallbackTransport: http.DefaultTransport,
+		Logger:            logger,
 	}
 }
 
@@ -42,7 +47,6 @@ type ProxyRoundTripper struct {
 	pool      *pool.Pool
 	parser    *parser.MultiParser
 	validator *validator.Validator
-	mu        sync.RWMutex
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
 }

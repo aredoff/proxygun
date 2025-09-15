@@ -89,6 +89,7 @@ type Config struct {
     ValidationWorkers int                // Number of validation workers (default 30, max 50)
     BadProxyMaxAge    time.Duration      // Bad proxy retention time (default 24 hours)
     FallbackTransport http.RoundTripper  // Fallback transport when all proxies fail (default http.DefaultTransport)
+    Logger            zerolog.Logger     // Logger for internal messages (default console logger)
 }
 ```
 
@@ -108,6 +109,23 @@ config.FallbackTransport = &http.Transport{
 
 // Disable fallback (fail if no proxies work)
 config.FallbackTransport = nil
+```
+
+### Logging
+
+The library uses [zerolog](https://github.com/rs/zerolog) for structured logging. By default, it outputs to stderr with a console-friendly format:
+
+```go
+config := proxygun.DefaultConfig()
+
+// Use custom logger
+config.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+
+// Disable logging
+config.Logger = zerolog.Nop()
+
+// JSON logging
+config.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 ```
 
 ## Architecture

@@ -2,14 +2,20 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"os"
 	"time"
 
 	"github.com/aredoff/proxygun"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 func main() {
+	// Setup pretty console logging
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+
 	config := proxygun.DefaultConfig()
+	// Logger already configured in DefaultConfig()
 	config.PoolSize = 20
 	config.MaxRetries = 5
 
@@ -20,7 +26,7 @@ func main() {
 
 	resp, err := client.Get("https://httpbin.org/ip")
 	if err != nil {
-		log.Printf("Error: %v", err)
+		log.Error().Err(err).Msg("Request failed")
 		return
 	}
 	defer resp.Body.Close()
