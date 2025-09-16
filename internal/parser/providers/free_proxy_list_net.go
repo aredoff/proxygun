@@ -10,7 +10,7 @@ import (
 	"github.com/aredoff/proxygun/internal/proxy"
 )
 
-// SSLProxiesProvider - specialized provider for www.sslproxies.org
+// https://free-proxy-list.net/ru/ssl-proxy.html
 type SSLProxiesProvider struct {
 	client *http.Client
 }
@@ -31,7 +31,7 @@ func (p *SSLProxiesProvider) Name() string {
 }
 
 func (p *SSLProxiesProvider) Parse() ([]*proxy.Proxy, error) {
-	req, err := http.NewRequest("GET", "https://www.sslproxies.org", nil)
+	req, err := http.NewRequest("GET", "https://free-proxy-list.net/ru/ssl-proxy.html", nil)
 	if err != nil {
 		return nil, err
 	}

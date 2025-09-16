@@ -2,7 +2,6 @@ package pool
 
 import (
 	"sync"
-	"time"
 
 	"github.com/aredoff/proxygun/internal/proxy"
 )
@@ -12,9 +11,9 @@ func NewProxyWithStats(p *proxy.Proxy) *proxy.ProxyWithStats {
 }
 
 type Pool struct {
-	proxies     []*proxy.ProxyWithStats
-	badProxies  map[string]*proxy.ProxyWithStats
-	freePool    []*proxy.ProxyWithStats
+	proxies     []*proxy.ProxyWithStats          //Main pool of proxies
+	badProxies  map[string]*proxy.ProxyWithStats //Pool of bad proxies
+	freePool    []*proxy.ProxyWithStats          //Pool of free proxies
 	current     int
 	maxSize     int
 	minRequests int
@@ -40,6 +39,12 @@ func (p *Pool) Add(proxy *proxy.Proxy) bool {
 		return false
 	}
 
+	for _, p := range p.proxies {
+		if p.Proxy.String() == proxyKey {
+			return false
+		}
+	}
+
 	proxyWithStats := NewProxyWithStats(proxy)
 
 	if len(p.proxies) < p.maxSize {
@@ -48,15 +53,49 @@ func (p *Pool) Add(proxy *proxy.Proxy) bool {
 	}
 
 	p.freePool = append(p.freePool, proxyWithStats)
-	return false
+	return true
 }
 
-func (p *Pool) GetNext() *proxy.ProxyWithStats {
+func (p *Pool) fillProxiesFromFree() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	moved := 0
+	if len(p.proxies) < p.maxSize {
+		for len(p.freePool) > 0 && len(p.proxies) < p.maxSize {
+			p.proxies = append(p.proxies, p.freePool[0])
+			p.freePool = p.freePool[1:]
+			moved++
+		}
+		if moved > 0 && len(p.proxies) > 0 {
+			if p.current >= len(p.proxies) {
+				p.current = 0
+			}
+		}
+	}
+}
+
+// FillFromFree moves proxies from free pool to main pool if needed
+func (p *Pool) FillFromFree() {
+	p.fillProxiesFromFree()
+}
+
+func (p *Pool) Next() *proxy.ProxyWithStats {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if len(p.proxies) == 0 {
 		return nil
+	}
+
+	if len(p.proxies) < p.maxSize {
+		p.mu.RUnlock()
+		p.fillProxiesFromFree()
+		p.mu.RLock()
+
+		if len(p.proxies) == 0 {
+			return nil
+		}
 	}
 
 	proxy := p.proxies[p.current]
@@ -148,16 +187,4 @@ func (p *Pool) NeedsProxies() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.maxSize - len(p.proxies)
-}
-
-func (p *Pool) CleanOldBadProxies(maxAge time.Duration) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	now := time.Now()
-	for key, badProxy := range p.badProxies {
-		if now.Sub(badProxy.Stats.LastUsed) > maxAge {
-			delete(p.badProxies, key)
-		}
-	}
 }

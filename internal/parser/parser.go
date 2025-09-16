@@ -28,14 +28,18 @@ func NewRotatingParser() *RotatingParser {
 			providers.NewSSLProxiesProvider(),
 			providers.NewUSProxyProvider(),
 			providers.NewFreeProxyListProvider(),
-			providers.NewUKProxyProvider(),
+			providers.NewCheckerProxyNetProvider(),
+			providers.NewGithubTheSpeedXProvider(),
+			providers.NewHideMyNameProvider(),
+			providers.NewGithubMmpx12Provider(),
+			providers.NewKuaidailiProvider(),
 		},
 		currentIdx: 0,
 	}
 }
 
 // ParseNext parses the next provider in rotation
-func (p *RotatingParser) ParseNext() ([]*proxy.Proxy, error) {
+func (p *RotatingParser) Next() ([]*proxy.Proxy, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -76,8 +80,8 @@ func NewMultiParser() *MultiParser {
 }
 
 // ParseAll performs parsing of one provider (with rotation)
-func (p *MultiParser) ParseAll() ([]*proxy.Proxy, []error) {
-	proxies, err := p.rotatingParser.ParseNext()
+func (p *MultiParser) Parse() ([]*proxy.Proxy, []error) {
+	proxies, err := p.rotatingParser.Next()
 	if err != nil {
 		return nil, []error{err}
 	}

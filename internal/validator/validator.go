@@ -1,34 +1,113 @@
 package validator
 
 import (
-	"context"
-	"fmt"
-	"net"
-	"net/http"
-	"sync"
 	"time"
 
 	"github.com/aredoff/proxygun/internal/proxy"
-	netproxy "golang.org/x/net/proxy"
 )
 
 type Validator struct {
-	timeout    time.Duration
-	testURL    string
-	maxRetries int
+	timeout      time.Duration
+	testURL      string
+	testHeaders  map[string]string
+	maxRetries   int
+	tcpTimeout   time.Duration
+	skipTCPCheck bool
 }
 
 func NewValidator() *Validator {
 	return &Validator{
-		timeout:    10 * time.Second,
-		testURL:    "https://www.google.com",
-		maxRetries: 2,
+		timeout: 5 * time.Second,
+		testURL: "https://www.ripe.net",
+		testHeaders: map[string]string{
+			"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+			"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+			"Accept-Language":           "en-US,en;q=0.9",
+			"Accept-Encoding":           "gzip, deflate, br",
+			"Connection":                "keep-alive",
+			"Upgrade-Insecure-Requests": "1",
+			"Sec-Fetch-Dest":            "document",
+			"Sec-Fetch-Mode":            "navigate",
+			"Sec-Fetch-Site":            "none",
+		},
+		maxRetries:   2,
+		tcpTimeout:   2 * time.Second,
+		skipTCPCheck: false,
+	}
+}
+
+// NewValidatorWithOptions creates validator with custom options
+func NewValidatorWithOptions(timeout, tcpTimeout time.Duration, skipTCPCheck bool) *Validator {
+	return &Validator{
+		timeout:      timeout,
+		testURL:      "https://www.ripe.net",
+		maxRetries:   2,
+		tcpTimeout:   tcpTimeout,
+		skipTCPCheck: skipTCPCheck,
 	}
 }
 
 func (v *Validator) ValidateProxy(p *proxy.Proxy) bool {
+	// Quick TCP connectivity check first
+	if !v.skipTCPCheck && !v.checkTCPConnectivity(p) {
+		return false
+	}
+
 	for i := 0; i < v.maxRetries; i++ {
 		if v.testProxy(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateAndDetectType validates proxy and automatically detects its type
+func (v *Validator) ValidateAndDetectType(p *proxy.Proxy) (*proxy.Proxy, bool) {
+	// Quick TCP connectivity check first
+	if !v.skipTCPCheck && !v.checkTCPConnectivity(p) {
+		return nil, false
+	}
+
+	// Try HTTP first (most common)
+	if v.tryProxyType(p, proxy.HTTP) {
+		return &proxy.Proxy{
+			Host: p.Host,
+			Port: p.Port,
+			Type: proxy.HTTP,
+		}, true
+	}
+
+	// Try SOCKS5
+	if v.tryProxyType(p, proxy.SOCKS5) {
+		return &proxy.Proxy{
+			Host: p.Host,
+			Port: p.Port,
+			Type: proxy.SOCKS5,
+		}, true
+	}
+
+	// Try SOCKS4 (least common, try last)
+	if v.tryProxyType(p, proxy.SOCKS4) {
+		return &proxy.Proxy{
+			Host: p.Host,
+			Port: p.Port,
+			Type: proxy.SOCKS4,
+		}, true
+	}
+
+	return nil, false
+}
+
+func (v *Validator) tryProxyType(p *proxy.Proxy, proxyType proxy.Type) bool {
+	testProxy := &proxy.Proxy{
+		Host: p.Host,
+		Port: p.Port,
+		Type: proxyType,
+	}
+
+	// Skip TCP check here since it's already done in ValidateAndDetectType
+	for i := 0; i < v.maxRetries; i++ {
+		if v.testProxy(testProxy) {
 			return true
 		}
 	}
@@ -44,173 +123,4 @@ func (v *Validator) testProxy(p *proxy.Proxy) bool {
 	default:
 		return false
 	}
-}
-
-func (v *Validator) testHTTPProxy(p *proxy.Proxy) bool {
-	proxyURL := p.URL()
-
-	transport := &http.Transport{
-		Proxy: http.ProxyURL(proxyURL),
-		DialContext: (&net.Dialer{
-			Timeout: v.timeout,
-		}).DialContext,
-		TLSHandshakeTimeout: v.timeout,
-	}
-
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   v.timeout,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), v.timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", v.testURL, nil)
-	if err != nil {
-		return false
-	}
-
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode == http.StatusOK
-}
-
-func (v *Validator) testSOCKSProxy(p *proxy.Proxy) bool {
-	var dialer netproxy.Dialer
-	var err error
-
-	proxyAddr := net.JoinHostPort(p.Host, fmt.Sprintf("%d", p.Port))
-
-	if p.Type == proxy.SOCKS4 {
-		return false
-	} else {
-		var auth *netproxy.Auth
-		if p.Username != "" {
-			auth = &netproxy.Auth{
-				User:     p.Username,
-				Password: p.Password,
-			}
-		}
-		dialer, err = netproxy.SOCKS5("tcp", proxyAddr, auth, netproxy.Direct)
-	}
-
-	if err != nil {
-		return false
-	}
-
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
-		},
-		TLSHandshakeTimeout: v.timeout,
-	}
-
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   v.timeout,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), v.timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", v.testURL, nil)
-	if err != nil {
-		return false
-	}
-
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode == http.StatusOK
-}
-
-func (v *Validator) ValidateProxies(proxies []*proxy.Proxy) []*proxy.Proxy {
-	validProxies := make([]*proxy.Proxy, 0)
-
-	for _, p := range proxies {
-		if v.ValidateProxy(p) {
-			validProxies = append(validProxies, p)
-		}
-	}
-
-	return validProxies
-}
-
-func (v *Validator) ValidateProxiesConcurrent(proxies []*proxy.Proxy, workers int) []*proxy.Proxy {
-	if workers <= 0 {
-		workers = 10
-	}
-
-	jobs := make(chan *proxy.Proxy, len(proxies))
-	results := make(chan *proxy.Proxy, len(proxies))
-
-	for w := 0; w < workers; w++ {
-		go func() {
-			for p := range jobs {
-				if v.ValidateProxy(p) {
-					results <- p
-				} else {
-					results <- nil
-				}
-			}
-		}()
-	}
-
-	for _, p := range proxies {
-		jobs <- p
-	}
-	close(jobs)
-
-	validProxies := make([]*proxy.Proxy, 0)
-	processed := 0
-	for i := 0; i < len(proxies); i++ {
-		if result := <-results; result != nil {
-			validProxies = append(validProxies, result)
-		}
-		processed++
-	}
-
-	return validProxies
-}
-
-func (v *Validator) ValidateProxiesConcurrentStream(proxies []*proxy.Proxy, workers int, validChan chan<- *proxy.Proxy) {
-	if workers <= 0 {
-		workers = 10
-	}
-	if workers > 50 {
-		workers = 50
-	}
-
-	jobs := make(chan *proxy.Proxy, len(proxies))
-	var wg sync.WaitGroup
-
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for p := range jobs {
-				if v.ValidateProxy(p) {
-					validChan <- p
-				}
-			}
-		}()
-	}
-
-	for _, p := range proxies {
-		jobs <- p
-	}
-	close(jobs)
-
-	wg.Wait()
 }
